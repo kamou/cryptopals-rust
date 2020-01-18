@@ -1,39 +1,19 @@
 extern crate base64;
 extern crate openssl;
 
-
-use std::fs;
-use std::io::{BufRead, BufReader};
 use std::error::Error;
 
-
-use openssl::symm::decrypt;
-use openssl::symm::{encrypt, Cipher};
-
-static KEY: &'static [u8] = b"YELLOW SUBMARINE";
-
+fn pkcs7_add_padding (data: &mut Vec<u8>, bsize: usize) {
+    let padding: usize = (bsize - data.len()) % bsize;
+    let mut padding = vec![padding as u8; padding];
+    data.append(&mut padding);
+}
 
 fn main () -> Result<(), Box<dyn Error>> {
+    let mut data = "YELLOW SUBMARINE".as_bytes().to_vec();
+    pkcs7_add_padding(&mut data, 20);
 
-    // read the file
-    let filename = "7.txt";
-    let file = fs::File::open(filename).unwrap();
-    let reader = BufReader::new(file);
-
-    // // Read the file line by line using the lines() iterator from std::io::BufRead.
-    let mut cipher = "".to_owned();
-    for line in reader.lines() {
-        let line = line.unwrap(); // Ignore errors.
-        cipher.push_str(&line);
-    }
-
-    let ciphertext = base64::decode(&cipher).unwrap();
-
-    let cipher = Cipher::aes_128_ecb();
-    let new_data = decrypt(cipher, KEY, None, &ciphertext[..]).unwrap();
-    println!("{}", String::from_utf8(new_data).unwrap());
-
-
+    assert_eq!(data, [89, 69, 76, 76, 79, 87, 32, 83, 85, 66, 77, 65, 82, 73, 78, 69, 4, 4, 4, 4]);
     Ok(())
 }
 
