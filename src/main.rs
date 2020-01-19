@@ -4,10 +4,16 @@ use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader};
 
-fn pkcs7_add_padding (data: &mut Vec<u8>, bsize: usize) {
+extern crate rand;
+
+use rand::Rng;
+
+fn pkcs7_add_padding (data: &Vec<u8>, bsize: usize) -> Vec<u8> {
     let padding: usize = (bsize - data.len()) % bsize;
     let mut padding = vec![padding as u8; padding];
+    let mut data = data.clone();
     data.append(&mut padding);
+    data
 }
 
 use aes::block_cipher_trait::generic_array::GenericArray;
@@ -24,67 +30,132 @@ fn aes_128_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>) -> Result<Vec<u8>, &'sta
     Ok(block.to_vec())
 }
 
-fn aes_cbc_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>, iv: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
-    assert_eq!(key.len(), iv.len());
+fn aes_128_encrypt(cleartext: &Vec<u8>, key: &Vec<u8>) -> Result<Vec<u8>, &'static str> {
+    let key = GenericArray::from_slice(&key[0..16]);
+    let mut block = GenericArray::clone_from_slice(&cleartext[0..16]);
 
-    let cipher_len = ciphertext.len();
-    let num_blocks = cipher_len / block_size;
-    let remaining  = cipher_len % block_size;
+    // Initialize cipher
+    let cipher = Aes128::new(&key);
+    cipher.encrypt_block(&mut block);
+    Ok(block.to_vec())
+}
 
+fn aes_ecb_encrypt(plaintext: &Vec<u8>, key: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
+    let blocks: Vec<&[u8]> = plaintext.chunks(block_size).collect();
+    let mut output: Vec<Vec<u8>> = Vec::new();
+    for current_block in blocks {
+        let mut current_block = current_block.to_owned();
+        if current_block.len() != block_size {
+            current_block = pkcs7_add_padding(&current_block, block_size).clone();
+        }
+        let eblock = aes_128_encrypt(&current_block, key).unwrap();
+        output.push(eblock);
+    }
+    Ok(output.concat())
+}
+fn aes_cbc_encrypt(plaintext: &Vec<u8>, key: &Vec<u8>, iv: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
     let mut iv = iv.clone();
+    let blocks: Vec<&[u8]> = plaintext.chunks(block_size).collect();
     let mut output = Vec::new();
-    for bi in 0..num_blocks {
-        let start = bi * block_size;
-        let end   = (bi + 1) * block_size;
+    for current_block in blocks {
+        let mut current_block = current_block.to_owned();
+        if current_block.len() != block_size {
+            current_block = pkcs7_add_padding(&current_block, block_size).clone();
+        }
+        let current_block = current_block.into_iter()
+            .zip(iv)
+            .map(|(dbv, ivv)| dbv^ivv)
+            .collect();
 
-        let current_block = ciphertext[start..end].to_vec();
+        let eblock = aes_128_encrypt(&current_block, key).unwrap();
+        iv = eblock.to_owned();
+        output.push(eblock);
+    }
+    Ok(output.concat())
+}
 
-        let mut dblock = aes_128_decrypt(&current_block, key).unwrap();
-        dblock = dblock.into_iter()
+fn aes_ecb_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
+    let blocks: Vec<&[u8]> = ciphertext.chunks(block_size).collect();
+    let mut output = Vec::new();
+    for current_block in blocks {
+        let dblock = aes_128_decrypt(&current_block.to_vec(), key).unwrap();
+        output.push(dblock);
+    }
+    Ok(output.concat())
+}
+fn aes_cbc_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>, iv: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
+    let mut iv = iv.clone();
+    let blocks: Vec<&[u8]> = ciphertext.chunks(block_size).collect();
+    let mut output = Vec::new();
+    for current_block in blocks {
+        let current_block = current_block.to_vec();
+
+        let dblock: Vec<u8> = aes_128_decrypt(&current_block, key)
+            .unwrap()
+            .into_iter()
             .zip(iv)
             .map(|(dbv, ivv)| dbv^ivv)
             .collect();
 
         iv = current_block;
-
-        output.append(&mut dblock);
+        output.push(dblock);
     }
+    Ok(output.concat())
+}
 
-    if remaining != 0 {
-        let mut current_block = ciphertext[(num_blocks * block_size)..].to_vec();
-        pkcs7_add_padding(&mut current_block, block_size);
-        let mut dblock = aes_128_decrypt(&current_block, key).unwrap();
-        dblock = dblock.into_iter()
-            .zip(iv)
-            .map(|(dbv, ivv)| dbv^ivv)
-            .collect();
-        output.append(&mut dblock);
+fn random_key(size: usize) -> Vec<u8> {
+    let mut rng = rand::thread_rng();
+
+    vec![0u8;size]
+        .into_iter()
+        .map(|_| rng.gen())
+        .collect()
+} 
+
+fn encryption_oracle(input: &Vec<u8>) -> Vec<u8> {
+    let mut rng = rand::thread_rng();
+    let key = random_key(16);
+
+    let coin: bool = rng.gen();
+    let pad_before: usize = rng.gen_range(5 , 11);
+    let pad_after: usize = rng.gen_range(5, 11);
+
+    let mut data = Vec::new();
+    data.push(random_key(pad_before));
+    data.push(input.to_vec());
+    data.push(random_key(pad_after));
+
+    let input = &data.concat();
+
+    match coin {
+        true => aes_ecb_encrypt(input, &key, 16).unwrap(),
+        false => {
+            let iv = random_key(16);
+            aes_cbc_encrypt(input, &key, &iv, 16).unwrap()
+        },
     }
-    Ok(output)
+}
+enum BlockMode {
+    CBC,
+    ECB,
+}
+
+fn tell_block_mode() -> BlockMode {
+    let data = encryption_oracle(&[0x41u8;64].to_vec());
+    let first = &data[16..32];
+    let second = &data[32..32+16];
+    if first == second {
+        return BlockMode::ECB;
+    }
+    return BlockMode::CBC;
 }
 
 fn main () -> Result<(), Box<dyn Error>> {
-    let mut data = "YELLOW SUBMARINE".as_bytes().to_vec();
-    pkcs7_add_padding(&mut data, 20);
-    assert_eq!(data, [89, 69, 76, 76, 79, 87, 32, 83, 85, 66, 77, 65, 82, 73, 78, 69, 4, 4, 4, 4]);
+    println!("{}", match tell_block_mode() {
+        BlockMode::CBC => "CBC",
+        BlockMode::ECB => "ECB",
 
-    println!("pkcs7 done");
-    let filename = "10.txt";
-    let file = fs::File::open(filename).unwrap();
-    let reader = BufReader::new(file);
-
-     // Read the file line by line using the lines() iterator from std::io::BufRead.
-    let mut cipher = "".to_owned();
-    for line in reader.lines() {
-        let line = line.unwrap(); // Ignore errors.
-        cipher.push_str(&line);
-    }
-    let ciphertext = base64::decode(&cipher).expect("ta mere");
-
-    let key = "YELLOW SUBMARINE".as_bytes().to_vec();
-    let iv = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].to_vec();
-    let cleartext = aes_cbc_decrypt(&ciphertext, &key, &iv, 16).unwrap();
-    println!("cleartext: {}", String::from_utf8(cleartext).expect(" tata "));
+    });
     Ok(())
 }
 
