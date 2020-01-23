@@ -154,7 +154,7 @@ impl CryptoToolbox {
         for current_block in blocks {
             let mut current_block = current_block.to_owned();
             if current_block.len() != size {
-                current_block = pkcs7_add_padding(&current_block, size).unwrap();
+                current_block = CryptoToolbox::pkcs7_add_padding(&current_block, size);
             }
             let eblock = self.aes_encrypt(&current_block, size)?;
             output.push(eblock);
@@ -169,7 +169,7 @@ impl CryptoToolbox {
         for current_block in blocks {
             let mut current_block = current_block.to_owned();
             if current_block.len() != size {
-                current_block = pkcs7_add_padding(&current_block, size).unwrap();
+                current_block = CryptoToolbox::pkcs7_add_padding(&current_block, size);
             }
             let current_block = current_block.into_iter()
                 .zip(iv)
@@ -182,116 +182,20 @@ impl CryptoToolbox {
         }
     Ok(output.concat())
     }
-}
 
-fn pkcs7_add_padding (data: &Vec<u8>, bsize: usize) -> Vec<u8> {
-    let padding: usize = (bsize - data.len()) % bsize;
-    let mut padding = vec![padding as u8; padding];
-    let mut data = data.clone();
-    data.append(&mut padding);
-    data
-}
-
-
-fn aes_128_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>) -> Result<Vec<u8>, &'static str> {
-    let key = GenericArray::from_slice(&key[0..16]);
-    let mut block = GenericArray::clone_from_slice(&ciphertext[0..16]);
-
-    // Initialize cipher
-    let cipher = Aes128::new(&key);
-    cipher.decrypt_block(&mut block);
-    Ok(block.to_vec())
-}
-
-fn aes_128_encrypt(cleartext: &Vec<u8>, key: &Vec<u8>) -> Result<Vec<u8>, &'static str> {
-    let key = GenericArray::from_slice(&key[0..16]);
-    let mut block = GenericArray::clone_from_slice(&cleartext[0..16]);
-
-    // Initialize cipher
-    let cipher = Aes128::new(&key);
-    cipher.encrypt_block(&mut block);
-    Ok(block.to_vec())
-}
-
-fn aes_ecb_encrypt(plaintext: &Vec<u8>, key: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
-    let blocks: Vec<&[u8]> = plaintext.chunks(block_size).collect();
-    let mut output: Vec<Vec<u8>> = Vec::new();
-    for current_block in blocks {
-        let mut current_block = current_block.to_owned();
-        if current_block.len() != block_size {
-            current_block = pkcs7_add_padding(&current_block, block_size).clone();
-        }
-        let eblock = aes_128_encrypt(&current_block, key).unwrap();
-        output.push(eblock);
+    fn pkcs7_add_padding (data: &Vec<u8>, size: usize) -> Vec<u8> {
+        let padding: usize = (size - data.len()) % size;
+        let mut padding = vec![padding as u8; padding];
+        let mut data = data.clone();
+        data.append(&mut padding);
+        data
     }
-    Ok(output.concat())
+
 }
 
-#[allow(dead_code)]
-fn aes_cbc_encrypt(plaintext: &Vec<u8>, key: &Vec<u8>, iv: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
-    let mut iv = iv.clone();
-    let blocks: Vec<&[u8]> = plaintext.chunks(block_size).collect();
-    let mut output = Vec::new();
-    for current_block in blocks {
-        let mut current_block = current_block.to_owned();
-        if current_block.len() != block_size {
-            current_block = pkcs7_add_padding(&current_block, block_size).clone();
-        }
-        let current_block = current_block.into_iter()
-            .zip(iv)
-            .map(|(dbv, ivv)| dbv^ivv)
-            .collect();
-
-        let eblock = aes_128_encrypt(&current_block, key).unwrap();
-        iv = eblock.to_owned();
-        output.push(eblock);
-    }
-    Ok(output.concat())
-}
-
-#[allow(dead_code)]
-fn aes_ecb_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
-    let blocks: Vec<&[u8]> = ciphertext.chunks(block_size).collect();
-    let mut output = Vec::new();
-    for current_block in blocks {
-        let dblock = aes_128_decrypt(&current_block.to_owned(), key).unwrap();
-        output.push(dblock);
-    }
-    Ok(output.concat())
-}
-
-#[allow(dead_code)]
-fn aes_cbc_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>, iv: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
-    let mut iv = iv.clone();
-    let blocks: Vec<&[u8]> = ciphertext.chunks(block_size).collect();
-    let mut output = Vec::new();
-    for current_block in blocks {
-        let current_block = current_block.to_owned();
-
-        let dblock: Vec<u8> = aes_128_decrypt(&current_block, key)
-            .unwrap()
-            .into_iter()
-            .zip(iv)
-            .map(|(dbv, ivv)| dbv^ivv)
-            .collect();
-
-        iv = current_block;
-        output.push(dblock);
-    }
-    Ok(output.concat())
-}
-
-fn random_data(size: usize) -> Vec<u8> {
-    let mut rng = rand::thread_rng();
-
-    vec![0u8;size]
-        .into_iter()
-        .map(|_| rng.gen())
-        .collect()
-}
 
 fn black_box_unknown_key(user_input: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
-    let key = random_data(block_size);
+    let key = CryptoToolbox::random(block_size);
     let data = user_input.clone();
 
     black_box_with_key(&data, &key, block_size)
@@ -308,7 +212,7 @@ fn black_box_with_key(user_input: &Vec<u8>, key: &Vec<u8>, block_size: usize) ->
     let mut prepad = match RAND_DATA.get() {
         Some(rd) => rd.to_vec(),
         None => {
-            let rd = random_data(rng.gen_range(5,11) as usize);
+            let rd = CryptoToolbox::random(rng.gen_range(5,11) as usize);
             match RAND_DATA.set(rd.clone()) {
                 Err(_) => return Err("Could not set RAND_DATA"),
                 _ => (),
@@ -319,8 +223,10 @@ fn black_box_with_key(user_input: &Vec<u8>, key: &Vec<u8>, block_size: usize) ->
 
     data.append(&mut unknown_str);
     prepad.append(&mut data);
-    aes_ecb_encrypt(&prepad, &key, block_size)
 
+    let mut ct = CryptoToolbox::new(Algo::AES(CipherMode::ECB, block_size));
+    ct.set_key(key);
+    ct.encrypt(&prepad)
 }
 fn black_box(user_input: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
     let key = KEY.get().unwrap();
@@ -397,7 +303,7 @@ fn challenge_14() {
     let block_size = detect_block_size(&black_box_unknown_key);
     println!("block size: {}", block_size);
 
-    let key = random_data(block_size);
+    let key = CryptoToolbox::random(block_size);
     KEY.set(key.to_vec()).expect("Could not set KEY");
 
     let data_size = find_target_block(10, block_size, &black_box);
