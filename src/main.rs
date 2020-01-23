@@ -4,6 +4,185 @@ extern crate rand;
 use std::collections;
 use rand::Rng;
 use once_cell::sync::OnceCell;
+use aes::block_cipher_trait::generic_array::GenericArray;
+use aes::block_cipher_trait::BlockCipher;
+use aes::{Aes128, Aes192, Aes256};
+
+enum CipherMode {
+    ECB,
+    CBC(Vec<u8>),
+}
+
+enum Algo {
+    AES(CipherMode, usize),
+}
+
+struct CryptoToolbox {
+    key: Vec<u8>,
+    algo: Algo,
+}
+
+impl CryptoToolbox {
+    fn new(algo: Algo) -> CryptoToolbox {
+        CryptoToolbox {
+            algo: algo,
+            key: Vec::new(),
+        }
+    }
+
+    fn random(size: usize) -> Vec<u8> {
+        let mut rng = rand::thread_rng();
+
+        vec![0u8;size]
+            .into_iter()
+            .map(|_| rng.gen())
+            .collect()
+    }
+
+    fn set_key(&mut self, key: &Vec<u8>) {
+        self.key.clear();
+        self.key.extend(key);
+    }
+
+    fn decrypt(&self, data: &Vec<u8>) -> Result<Vec<u8>, &'static str> {
+        match &self.algo {
+            Algo::AES(mode, size) => match mode {
+                CipherMode::ECB => self.aes_ecb_decrypt(data, *size),
+                CipherMode::CBC(iv) => self.aes_cbc_decrypt(data, iv, *size),
+            }
+            _ => panic!(""),
+        }
+    }
+
+    fn encrypt(&self, data: &Vec<u8>) -> Result<Vec<u8>, &'static str> {
+        match &self.algo {
+            Algo::AES(mode, size) => match mode {
+                CipherMode::ECB => self.aes_ecb_encrypt(data, *size),
+                CipherMode::CBC(iv) => self.aes_cbc_encrypt(data, iv, *size),
+            }
+            _ => panic!(""),
+        }
+    }
+
+    fn aes_decrypt(&self, ciphertext: &Vec<u8>, size: usize) -> Result<Vec<u8>, &'static str> {
+        let mut result;
+        match size {
+            16 => {
+                let mut block = GenericArray::clone_from_slice(&ciphertext[0..size]);
+                let key = GenericArray::from_slice(&self.key[0..size]);
+                Aes128::new(key).decrypt_block(&mut block);
+                result = block;
+            },
+            24 => {
+                let mut block = GenericArray::clone_from_slice(&ciphertext[0..size]);
+                let key = GenericArray::from_slice(&self.key[0..size]);
+                Aes192::new(key).decrypt_block(&mut block);
+                result = block;
+            },
+            32 => {
+                let mut block = GenericArray::clone_from_slice(&ciphertext[0..size]);
+                let key = GenericArray::from_slice(&self.key[0..size]);
+                Aes256::new(key).decrypt_block(&mut block);
+                result = block;
+            },
+            _ =>
+                panic!("aes block size not supported")
+        };
+        Ok(result.to_vec())
+    }
+
+    fn aes_encrypt(&self, plaintext: &Vec<u8>, size: usize) -> Result<Vec<u8>, &'static str> {
+        let mut result;
+        match size {
+            16 => {
+                let mut block = GenericArray::clone_from_slice(&plaintext[0..size]);
+                let key = GenericArray::from_slice(&self.key[0..size]);
+                Aes128::new(key).encrypt_block(&mut block);
+                result = block;
+            },
+            24 => {
+                let mut block = GenericArray::clone_from_slice(&plaintext[0..size]);
+                let key = GenericArray::from_slice(&self.key[0..size]);
+                Aes192::new(key).encrypt_block(&mut block);
+                result = block;
+            },
+            32 => {
+                let mut block = GenericArray::clone_from_slice(&plaintext[0..size]);
+                let key = GenericArray::from_slice(&self.key[0..size]);
+                Aes256::new(key).encrypt_block(&mut block);
+                result = block;
+            },
+            _ =>
+                panic!("aes block size not supported")
+        };
+        Ok(result.to_vec())
+    }
+
+    fn aes_ecb_decrypt(&self, ciphertext: &Vec<u8>, size: usize) -> Result<Vec<u8>, &'static str> {
+        let blocks: Vec<&[u8]> = ciphertext.chunks(size).collect();
+        let mut output = Vec::new();
+        for current_block in blocks {
+            let dblock = self.aes_decrypt(&current_block.to_owned(), size)?;
+            output.push(dblock);
+        }
+        Ok(output.concat())
+    }
+
+    fn aes_cbc_decrypt(&self, ciphertext: &Vec<u8>, iv: &Vec<u8>, size: usize) -> Result<Vec<u8>, &'static str> {
+
+        let mut iv = iv.clone();
+        let blocks: Vec<&[u8]> = ciphertext.chunks(size).collect();
+        let mut output = Vec::new();
+        for current_block in blocks {
+            let current_block = current_block.to_owned();
+
+            let dblock: Vec<u8> = self.aes_decrypt(&current_block, size)?
+                .into_iter()
+                .zip(iv)
+                .map(|(dbv, ivv)| dbv^ivv)
+                .collect();
+
+            iv = current_block;
+            output.push(dblock);
+        }
+        Ok(output.concat())
+    }
+
+    fn aes_ecb_encrypt(&self, plaintext: &Vec<u8>, size: usize) -> Result<Vec<u8>, &'static str> {
+        let blocks: Vec<&[u8]> = plaintext.chunks(size).collect();
+        let mut output: Vec<Vec<u8>> = Vec::new();
+        for current_block in blocks {
+            let mut current_block = current_block.to_owned();
+            if current_block.len() != size {
+                current_block = pkcs7_add_padding(&current_block, size).unwrap();
+            }
+            let eblock = self.aes_encrypt(&current_block, size)?;
+            output.push(eblock);
+        }
+        Ok(output.concat())
+    }
+
+    fn aes_cbc_encrypt(&self, plaintext: &Vec<u8>, iv: &Vec<u8>, size: usize) -> Result<Vec<u8>, &'static str> {
+        let mut iv = iv.clone();
+        let blocks: Vec<&[u8]> = plaintext.chunks(size).collect();
+        let mut output = Vec::new();
+        for current_block in blocks {
+            let mut current_block = current_block.to_owned();
+            if current_block.len() != size {
+                current_block = pkcs7_add_padding(&current_block, size).unwrap();
+            }
+            let current_block = current_block.into_iter()
+                .zip(iv)
+                .map(|(dbv, ivv)| dbv^ivv)
+                .collect();
+
+            let eblock = self.aes_encrypt(&current_block, size)?;
+            iv = eblock.to_owned();
+            output.push(eblock);
+        }
+    Ok(output.concat())
+    }
+}
 
 fn pkcs7_add_padding (data: &Vec<u8>, bsize: usize) -> Vec<u8> {
     let padding: usize = (bsize - data.len()) % bsize;
@@ -13,9 +192,6 @@ fn pkcs7_add_padding (data: &Vec<u8>, bsize: usize) -> Vec<u8> {
     data
 }
 
-use aes::block_cipher_trait::generic_array::GenericArray;
-use aes::block_cipher_trait::BlockCipher;
-use aes::Aes128;
 
 fn aes_128_decrypt(ciphertext: &Vec<u8>, key: &Vec<u8>) -> Result<Vec<u8>, &'static str> {
     let key = GenericArray::from_slice(&key[0..16]);
@@ -112,7 +288,7 @@ fn random_data(size: usize) -> Vec<u8> {
         .into_iter()
         .map(|_| rng.gen())
         .collect()
-} 
+}
 
 fn black_box_unknown_key(user_input: &Vec<u8>, block_size: usize) -> Result<Vec<u8>, &'static str> {
     let key = random_data(block_size);
